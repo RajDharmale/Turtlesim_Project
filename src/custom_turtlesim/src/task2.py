@@ -105,6 +105,11 @@ if __name__ == '__main__':
         controller.move_to_target(1, 5, 0.1, 0.1)
         controller.move_to_target(10, 5, 0.1, 0.1)
         controller.move_to_target(10, 6, 0.1, 0.1)
+        controller.move_to_target(1,6,0.1,0.1)
+        controller.move_to_target(1,7,0.1,0.1)
+        controller.move_to_target(10,7,0.1,0.1)
+        controller.move_to_target(10,8,0.1,0.1)
+        
 
     except rospy.ROSInterruptException:
         pass
