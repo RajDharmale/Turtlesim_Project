@@ -1,271 +1,136 @@
-#!/usr/bin/env python3
-
+#!/usr/bin/env python
 
 import rospy
-import math
+from turtlesim.msg import Pose
 from turtlesim.srv import Spawn, Kill
 from geometry_msgs.msg import Twist
-from turtlesim.msg import Pose
+import random
+import math
+import threading
+import numpy as np
 
-# Global variables for positions and angles
-target_x = 0.0
-target_y = 0.0
-chaser_x = 0.0
-chaser_y = 0.0
-chaser_theta = 0.0  # Angle of the chaser turtle
-distance=0
+class TurtleController:
+    def __init__(self):
+        rospy.init_node('turtle_controller', anonymous=True)
+        self.rate = rospy.Rate(10)  # 10hz
+        
+        self.rt_pose = Pose()
+        self.rt_velocity_publisher = rospy.Publisher('/rt/cmd_vel', Twist, queue_size=10)
+        self.rt_real_pose_publisher = rospy.Publisher('/rt_real_pose', Pose, queue_size=10)
+        self.rt_noisy_pose_publisher = rospy.Publisher('/rt_noisy_pose', Pose, queue_size=10)
+        rospy.Subscriber('/rt/pose', Pose, self.update_rt_pose)
+        
+        self.pt_pose = Pose()
+        self.pt_velocity_publisher = rospy.Publisher('/pt/cmd_vel', Twist, queue_size=10)
+        rospy.Subscriber('/rt_real_pose', Pose, self.update_rt_pose)
+        rospy.Subscriber('/pt/pose', Pose, self.update_pt_pose)
+        
+        self.Kp_linear = 3
+        self.Ki_linear = 0.01
+        self.Kd_linear = 0.1
+        
+        self.Kp_angular = 4.0
+        
+        self.linear_error_prev = 0.0
+        self.linear_integral = 0.0
+        
+        self.max_speed = 100
+        self.min_speed = 0.1
+        self.chase_complete = False
 
-# Global publisher for velocity commands
-pub = None
+    def update_rt_pose(self, data):
+        self.rt_pose = data
 
-# Constants for chasing behavior
-CHASE_DISTANCE_THRESHOLD = 3.0
-CHASE_LINEAR_SPEED = 10.0
-TARGET_LINEAR_SPEED = 4
-
-
-def target_pose_callback(data):
-    global target_x, target_y
-   
-    target_x = data.x
-    target_y = data.y 
-       
-def movebot(x,y,z,x1,y1,z1,duration):
-    global distance
-    cmd=Twist()
-    cmd.linear.x=x
-    cmd.linear.y=y 
-    cmd.linear.z=z 
-    cmd.angular.x=x1 
-    cmd.angular.y=y1 
-    cmd.angular.z=z1
-    rate = rospy.Rate(10)
-    start_time=rospy.Time.now()
-    while rospy.Time.now() - start_time < rospy.Duration(duration):
-       if distance<=CHASE_DISTANCE_THRESHOLD:
-           return
-       pub.publish(cmd)
-       if distance<=CHASE_DISTANCE_THRESHOLD:
-        return
-       rate.sleep
-def chaser_pose_callback(data):
-    global chaser_x, chaser_y, chaser_theta
-    chaser_x = data.x
-    chaser_y = data.y
-    chaser_theta = data.theta  # Update chaser's angle
-
-def move_to_goal(goal_x, goal_y):
-    global chaser_x, chaser_y, chaser_theta, pub,distance
-
-    # rospy.loginfo("%f, %f , %f ,%f",goal_x,goal_y,chaser_x,chaser_y)
-    distance = math.sqrt((goal_x - chaser_x) *(goal_x - chaser_x) + (goal_y - chaser_y) *(goal_y - chaser_y))
-    flag=False
-    if(distance<=5 or flag):
-        flag=True
-        angle = math.atan2(goal_y - chaser_y, goal_x - chaser_x)
-        ac=0.1
-    # Calculate linear velocity towards the goal
-        linear_velocity = min(TARGET_LINEAR_SPEED, distance)+ac
-        ac=ac+0.1
-    # Calculate angular velocity towards the goal
-        angular_velocity = 2.0 * (angle - chaser_theta)
-
-    # Publish velocity command
-        cmd = Twist()
-        cmd.linear.x = linear_velocity
-        cmd.angular.z = angular_velocity
-        pub.publish(cmd)
-        rospy.loginfo("distance %f ",distance)
-        # If goal is reached, stop and shutdown
-        if distance <= 0.1 and distance!=0:
-            cmd = Twist()
-            cmd.linear.x = linear_velocity+0.1
-            cmd.angular.z = angular_velocity+0.1
-            pub.publish(cmd)
-            rospy.loginfo("Goal reached")
-            rospy.signal_shutdown("Goal reached")
-    else:
-        movebot(0,0,0,0,0,0,0.5)
-        movebot(2.4,0,0,0,0,0,4)
-        movebot(0,0,0,0,0,0,0.5)
-        movebot(0,2,0,0,0,0,0.4)
-        movebot(0,0,0,0,0,0,0.5)
-        movebot(-2.4,0,0,0,0,0,4)
-        movebot(0,0,0,0,0,0,0.5)
-        movebot(0,2,0,0,0,0,0.4)
-        movebot(0,0,0,0,0,0,0.5)
-                
-
-def main():
-    global pub
-    rospy.init_node('turtle_chaser')
-    pub = rospy.Publisher('/turtle1/cmd_vel', Twist, queue_size=10)
-    rospy.Subscriber("/rt_real_pose", Pose, callback=target_pose_callback)
-    rospy.Subscriber("/turtle1/pose", Pose, callback=chaser_pose_callback)
+    def update_pt_pose(self, data):
+        self.pt_pose = data
     
-    # Delete previous turtle
-    rospy.wait_for_service('/kill')
-    try:
-        kill_proxy = rospy.ServiceProxy('/kill', Kill)
-        kill_proxy('turtle1')
-    except rospy.ServiceException as e:
-        rospy.logerr("Service call failed: %s", e)
-    
-    # Spawn new turtle at custom location
-    rospy.wait_for_service('/spawn')
-    try:
-        spawn_proxy = rospy.ServiceProxy('/spawn', Spawn)
-        spawn_proxy(1,1, 0.0, 'turtle1')
-    except rospy.ServiceException as e:
-        rospy.logerr("Service call failed: %s", e)
-    
-    # Main loop to move the turtle to the goal
-    rate = rospy.Rate(10)
-    while not rospy.is_shutdown():
-        move_to_goal(target_x, target_y)
-        rate.sleep()
+    def compute_pid(self, error, error_prev, integral, Kp, Ki, Kd):
+        integral += error
+        derivative = error - error_prev
+        output = Kp * error + Ki * integral + Kd * derivative
+        return output, integral, error
+
+    def move_rt_in_circle(self, radius=3.2, linear_velocity=2.0):
+        twist = Twist()
+        while not rospy.is_shutdown():
+            twist.linear.x = 2.0
+            twist.angular.z = 2.0 / 3.2
+
+            self.rt_velocity_publisher.publish(twist)
+            
+            self.rt_real_pose_publisher.publish(self.rt_pose)
+            if self.chase_complete == True:
+                return
+            # noisy_pose = Pose()
+            # noisy_pose.x = self.rt_pose.x + np.random.normal(0, 10)
+            # noisy_pose.y = self.rt_pose.y + np.random.normal(0, 10)
+            # noisy_pose.theta = self.rt_pose.theta + np.random.normal(0, 10)
+            # self.rt_noisy_pose_publisher.publish(noisy_pose)
+
+    def move_pt_towards_rt(self):
+        while not rospy.is_shutdown() and not self.chase_complete:
+            distance = math.sqrt((self.rt_pose.x - self.pt_pose.x)**2 + (self.rt_pose.y - self.pt_pose.y)**2)
+            if distance <= 0.5:
+                rospy.loginfo("Caught! Police turtle caught robber turtle Yay!")
+                self.chase_complete = True
+                print("distance: ", distance)
+                return
+            
+            angle_to_target = math.atan2(self.rt_pose.y - self.pt_pose.y, self.rt_pose.x - self.pt_pose.x)
+            distance_error = distance
+            angular_error = angle_to_target - self.pt_pose.theta
+            
+            if angular_error > math.pi:
+                angular_error -= 2 * math.pi
+            elif angular_error < -math.pi:
+                angular_error += 2 * math.pi
+            
+            linear_output, self.linear_integral, self.linear_error_prev = self.compute_pid(
+                distance_error, self.linear_error_prev, self.linear_integral,
+                self.Kp_linear, self.Ki_linear, self.Kd_linear)
+
+            if linear_output > self.max_speed:
+                linear_output = self.max_speed
+            elif linear_output < self.min_speed:
+                linear_output = self.min_speed
+            
+            self.current_linear_velocity = linear_output
+            
+            twist = Twist()
+            twist.linear.x = linear_output
+            twist.angular.z = self.Kp_angular * angular_error
+            print("distance: ", distance)
+            self.pt_velocity_publisher.publish(twist)
+            self.rate.sleep()
+
+    def spawn_turtle(self, name, x, y, theta):
+        rospy.wait_for_service('/spawn')
+        try:
+            spawn_proxy = rospy.ServiceProxy('/spawn', Spawn)
+            spawn_proxy(x, y, theta, name)
+        except rospy.ServiceException as e:
+            rospy.logerr("Service call failed: %s", e)
+
 
 if __name__ == '__main__':
-    main()
+    try:
+        controller = TurtleController()
+        controller.spawn_turtle('rt', 5.0, 3.0, 0.0)
+        print("spawn rt")
+        rt_thread = threading.Thread(target=controller.move_rt_in_circle, args=(5.0, 1.0))
+        rt_thread.start()
+        print("after start")
+        rospy.sleep(5)
+        random_x = random.uniform(0, 10)
+        random_y = random.uniform(0, 10)
+        controller.spawn_turtle('pt', random_x, random_y, 0.0)
+        
+        pt_thread = threading.Thread(target=controller.move_pt_towards_rt)
+        pt_thread.start()
+        
+        rt_thread.join()
+        pt_thread.join()
 
-
-
-
-
-
-
-
-
-
-
-# #!/usr/bin/env python3
-
-
-# import rospy
-# import math
-# from turtlesim.srv import Spawn, Kill
-# from geometry_msgs.msg import Twist
-# from turtlesim.msg import Pose
-
-# # Global variables for positions and angles
-# target_x = 0.0
-# target_y = 0.0
-# chaser_x = 0.0
-# chaser_y = 0.0
-# chaser_theta = 0.0  # Angle of the chaser turtle
-# distance=0
-
-# # Global publisher for velocity commands
-# pub = None
-
-# # Constants for chasing behavior
-# CHASE_DISTANCE_THRESHOLD = 3.0
-# CHASE_LINEAR_SPEED = 10.0
-# TARGET_LINEAR_SPEED = 2.0
-
-
-# def target_pose_callback(data):
-#     global target_x, target_y
-    
-    
-#       # 0.2 Hz, i.e., 5 seconds interval
-#      # Wait for the flag to be set
-#     target_x = data.x
-#     target_y = data.y 
-       
-# def movebot(x,y,z,x1,y1,z1,duration):
-#     global distance
-#     cmd=Twist()
-#     cmd.linear.x=x
-#     cmd.linear.y=y 
-#     cmd.linear.z=z 
-#     cmd.angular.x=x1 
-#     cmd.angular.y=y1 
-#     cmd.angular.z=z1
-#     rate = rospy.Rate(10)
-#     start_time=rospy.Time.now()
-#     while rospy.Time.now() - start_time < rospy.Duration(duration):
-#        if distance<=CHASE_DISTANCE_THRESHOLD:
-#            return
-#        pub.publish(cmd)
-#        rate.sleep
-# def chaser_pose_callback(data):
-#     global chaser_x, chaser_y, chaser_theta
-#     chaser_x = data.x
-#     chaser_y = data.y
-#     chaser_theta = data.theta  # Update chaser's angle
-
-# def move_to_goal(goal_x, goal_y):
-#     global chaser_x, chaser_y, chaser_theta, pub,distance
-
-#     # rospy.loginfo("%f, %f , %f ,%f",goal_x,goal_y,chaser_x,chaser_y)
-#     distance = math.sqrt((goal_x - chaser_x) *(goal_x - chaser_x) + (goal_y - chaser_y) *(goal_y - chaser_y))
-    
-#     if(distance<=3):
-    
-#         angle = math.atan2(goal_y - chaser_y, goal_x - chaser_x)
-#         ac=0.1
-#     # Calculate linear velocity towards the goal
-#         linear_velocity = min(TARGET_LINEAR_SPEED, distance)+ac
-#         ac=ac+0.1
-#     # Calculate angular velocity towards the goal
-#         angular_velocity = 2.0 * (angle - chaser_theta)
-
-#     # Publish velocity command
-#         cmd = Twist()
-#         cmd.linear.x = linear_velocity
-#         cmd.angular.z = angular_velocity
-#         pub.publish(cmd)
-#         rospy.loginfo("distance %f ",distance)
-#         # If goal is reached, stop and shutdown
-#         if distance <= 0.8:
-#             cmd = Twist()
-#             cmd.linear.x = linear_velocity+0.1
-#             cmd.angular.z = angular_velocity+0.1
-#             pub.publish(cmd)
-#             rospy.loginfo("Goal reached")
-#             rospy.signal_shutdown("Goal reached")
-#     else:
-#         movebot(0,0,0,0,0,0,0.5)
-#         movebot(2.4,0,0,0,0,0,4)
-#         movebot(0,0,0,0,0,0,0.5)
-#         movebot(0,2,0,0,0,0,0.4)
-#         movebot(0,0,0,0,0,0,0.5)
-#         movebot(-2.4,0,0,0,0,0,4)
-#         movebot(0,0,0,0,0,0,0.5)
-#         movebot(0,2,0,0,0,0,0.4)
-#         movebot(0,0,0,0,0,0,0.5)
-                
-
-# def main():
-#     global pub
-#     rospy.init_node('turtle_chaser')
-#     pub = rospy.Publisher('/turtle1/cmd_vel', Twist, queue_size=10)
-#     rospy.Subscriber("/rt_real_pose", Pose, callback=target_pose_callback)
-#     rospy.Subscriber("/turtle1/pose", Pose, callback=chaser_pose_callback)
-    
-#     # Delete previous turtle
-#     rospy.wait_for_service('/kill')
-#     try:
-#         kill_proxy = rospy.ServiceProxy('/kill', Kill)
-#         kill_proxy('turtle1')
-#     except rospy.ServiceException as e:
-#         rospy.logerr("Service call failed: %s", e)
-    
-#     # Spawn new turtle at custom location
-#     rospy.wait_for_service('/spawn')
-#     try:
-#         spawn_proxy = rospy.ServiceProxy('/spawn', Spawn)
-#         spawn_proxy(2.0, 2.0, 0.0, 'turtle1')
-#     except rospy.ServiceException as e:
-#         rospy.logerr("Service call failed: %s", e)
-    
-#     # Main loop to move the turtle to the goal
-#     rate = rospy.Rate(10)
-#     while not rospy.is_shutdown():
-#         move_to_goal(target_x, target_y)
-#         rate.sleep()
-
-# if __name__ == '__main__':
-#     main()
-
+        
+    except rospy.ROSInterruptException:
+        pass
